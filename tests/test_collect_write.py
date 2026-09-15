@@ -4,7 +4,9 @@ import json
 import os
 import stat
 import tempfile
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,6 +21,33 @@ def load_collect():
     mod = importlib.util.module_from_spec(spec)
     loader.exec_module(mod)
     return mod
+
+
+def serve_json(routes):
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            status, body = routes.get(self.path, (404, b"{}"))
+            if isinstance(body, str):
+                body = body.encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread
+
+
+def stop_server(server, thread):
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=2)
 
 
 def fixture_payload(url, key=None):
@@ -101,7 +130,7 @@ class CollectWriteTests(unittest.TestCase):
         finally:
             self.mod.subprocess.run = original
 
-        expected = ["curl", "-sS", "-m", "8", "-K", "-"]
+        expected = ["curl", "-sS", "-f", "-m", "8", "-K", "-"]
         self.assertEqual(len(calls), 2)
         auth_argv, auth_in = calls[0]
         live_argv, live_in = calls[1]
@@ -113,6 +142,66 @@ class CollectWriteTests(unittest.TestCase):
         self.assertNotIn("Authorization", live_in)
         self.assertIn("url=http://127.0.0.1:3001/livez", live_in)
         self.assertEqual(payload, {"status": "ok"})
+
+    def test_missing_key_keeps_previous_and_marks_stale(self):
+        self.mod.http_get = fixture_payload
+        self.mod.main([])
+        previous = json.loads(self.state_path.read_text())
+        self.assertFalse(previous.get("stale"))
+
+        called = []
+
+        def spy(url, key=None):
+            called.append(url)
+            return fixture_payload(url, key)
+
+        self.mod.http_get = spy
+        self.mod.load_key = lambda: None
+        rc = self.mod.main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual([u for u in called if "/v1/" in u], [])
+        data = json.loads(self.state_path.read_text())
+        self.assertTrue(data["stale"])
+        self.assertEqual(data["chat"]["total"], previous["chat"]["total"])
+        self.assertIn("missing FREELLMAPI_UNIFIED_KEY", data.get("error") or "")
+
+    def test_http_get_raises_on_401_json(self):
+        server, thread = serve_json({"/v1/models": (401, b'{"error":"unauthorized"}')})
+        try:
+            url = f"http://127.0.0.1:{server.server_address[1]}/v1/models"
+            with self.assertRaises(RuntimeError):
+                self.mod.http_get(url, key="wrong-key")
+        finally:
+            stop_server(server, thread)
+
+    def test_collect_marks_stale_on_non_2xx(self):
+        self.mod.http_get = fixture_payload
+        self.mod.main([])
+        previous = json.loads(self.state_path.read_text())
+        live = b'{"status":"ok","version":"test","uptime_s":1}'
+        ready = b'{"status":"ok","ready_upstreams":1}'
+        err = b'{"error":"unavailable"}'
+        server, thread = serve_json({
+            "/livez": (200, live),
+            "/readyz": (200, ready),
+            "/v1/providers": (503, err),
+            "/v1/quota-forecast": (503, err),
+            "/v1/models": (503, err),
+        })
+        try:
+            cfg = self.state_path.parent / "config.json"
+            cfg.parent.mkdir(parents=True, exist_ok=True)
+            cfg.write_text(json.dumps({
+                "baseUrl": f"http://127.0.0.1:{server.server_address[1]}",
+            }))
+            self.mod.http_get = self._http
+            rc = self.mod.main([])
+        finally:
+            stop_server(server, thread)
+        self.assertEqual(rc, 0)
+        data = json.loads(self.state_path.read_text())
+        self.assertTrue(data["stale"])
+        self.assertEqual(data["chat"]["total"], previous["chat"]["total"])
 
 
 if __name__ == "__main__":

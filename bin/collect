@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lib.normalize import normalize_state
 
 DEFAULT_BASE = "http://127.0.0.1:3001"
-CURL_ARGV = ["curl", "-sS", "-m", "8", "-K", "-"]
+CURL_ARGV = ["curl", "-sS", "-f", "-m", "8", "-K", "-"]
 PLUGIN_STATE = Path("omarchy") / "io.github.mbot11.freellmapi"
 
 
@@ -103,6 +103,8 @@ def atomic_write(path, data):
 def fetch_all(base, key):
     livez = http_get(f"{base}/livez")
     readyz = http_get(f"{base}/readyz")
+    if not key:
+        raise RuntimeError("missing FREELLMAPI_UNIFIED_KEY")
     providers = http_get(f"{base}/v1/providers", key=key)
     quota = http_get(f"{base}/v1/quota-forecast", key=key)
     models = http_get(f"{base}/v1/models", key=key)
