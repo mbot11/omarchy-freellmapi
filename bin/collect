@@ -1,0 +1,133 @@
+#!/usr/bin/python3
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lib.normalize import normalize_state
+
+DEFAULT_BASE = "http://127.0.0.1:3001"
+CURL_ARGV = ["curl", "-sS", "-m", "8", "-K", "-"]
+PLUGIN_STATE = Path("omarchy") / "io.github.mbot11.freellmapi"
+
+
+def state_dir():
+    xdg = os.environ.get("XDG_STATE_HOME")
+    if xdg:
+        return Path(xdg) / PLUGIN_STATE
+    return Path.home() / ".local" / "state" / PLUGIN_STATE
+
+
+def load_key():
+    env_path = Path.home() / ".env"
+    if not env_path.is_file():
+        return None
+    for raw in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].strip()
+        if "=" not in line:
+            continue
+        name, _, value = line.partition("=")
+        if name.strip() == "FREELLMAPI_UNIFIED_KEY":
+            return value.strip().strip("'").strip('"') or None
+    return None
+
+
+def load_base_url():
+    cfg = state_dir() / "config.json"
+    if not cfg.is_file():
+        return DEFAULT_BASE
+    try:
+        data = json.loads(cfg.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return DEFAULT_BASE
+    url = data.get("baseUrl") if isinstance(data, dict) else None
+    if isinstance(url, str) and url.strip():
+        return url.strip().rstrip("/")
+    return DEFAULT_BASE
+
+
+def http_get(url, key=None):
+    lines = [f"url={url}"]
+    if key:
+        lines.append(f'header = "Authorization: Bearer {key}"')
+    config = "\n".join(lines) + "\n"
+    proc = subprocess.run(
+        CURL_ARGV,
+        input=config,
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        err = (proc.stderr or "").strip() or f"curl exit {proc.returncode}"
+        raise RuntimeError(err)
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("invalid json") from exc
+
+
+def _load_previous(path):
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def atomic_write(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    payload = json.dumps(data, separators=(",", ":"), ensure_ascii=True)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = None
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+    finally:
+        if fd is not None:
+            os.close(fd)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+
+
+def fetch_all(base, key):
+    livez = http_get(f"{base}/livez")
+    readyz = http_get(f"{base}/readyz")
+    providers = http_get(f"{base}/v1/providers", key=key)
+    quota = http_get(f"{base}/v1/quota-forecast", key=key)
+    models = http_get(f"{base}/v1/models", key=key)
+    return normalize_state(livez, readyz, providers, quota, models)
+
+
+def main(argv=None):
+    if argv is None:
+        argv = sys.argv[1:]
+    dest = state_dir() / "state.json"
+    try:
+        state = fetch_all(load_base_url(), load_key())
+    except Exception as exc:
+        state = normalize_state(
+            None,
+            None,
+            None,
+            None,
+            None,
+            previous=_load_previous(dest),
+            error=str(exc),
+        )
+    atomic_write(dest, state)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
