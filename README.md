@@ -11,13 +11,13 @@ Read-only Omarchy bar widget for a local [FreeLLMAPI](https://github.com/mbot11/
 
 ## Install
 
-From this local clone (no public remote yet):
+From a local clone of this repo (no public remote yet):
 
 ```bash
-omarchy plugin add $(pwd) --enable
+omarchy plugin add "$(pwd)" --enable
 ```
 
-Or copy/symlink the repo under `~/.config/omarchy/plugins/io.github.mbot11.freellmapi` and enable it from bar settings. The pill lands on the right section.
+Or symlink the clone to `~/.config/omarchy/plugins/io.github.mbot11.freellmapi` and enable it from bar settings. The pill lands on the right section. Do not enable until you intend to load it in the live shell.
 
 Optional hotkey in `~/.config/hypr/bindings.lua`:
 
