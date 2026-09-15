@@ -21,10 +21,11 @@ Panel {
   readonly property var gateway: (root.snap && root.snap.gateway) ? root.snap.gateway : ({})
   readonly property bool gatewayLive: root.gateway.live === true
   readonly property bool gatewayReady: root.gateway.ready === true
+  readonly property bool gatewayDown: !root.gatewayLive || !root.gatewayReady
   readonly property bool degraded: {
+    if (root.gatewayDown) return false
     var s = root.snap
     if (s && s.error) return true
-    if (root.gatewayLive && !root.gatewayReady) return true
     var list = s && s.providers
     if (!list || !list.length) return false
     for (var i = 0; i < list.length; i++) {
@@ -33,12 +34,12 @@ Panel {
     return false
   }
   readonly property color statusColor: {
-    if (!root.gatewayLive) return Color.urgent
+    if (root.gatewayDown) return Color.urgent
     if (root.degraded) return Color.accent
     return Color.foreground
   }
   readonly property string statusLabel: {
-    if (!root.gatewayLive) return "Down"
+    if (root.gatewayDown) return "Down"
     if (root.degraded) return "Degraded"
     return "Ready"
   }
@@ -119,15 +120,22 @@ Panel {
       anchors.centerIn: parent
       spacing: Style.space(6)
 
-      Rectangle {
-        width: Style.space(6)
-        height: Style.space(6)
-        radius: width / 2
-        color: root.statusColor
-        anchors.verticalCenter: parent.verticalCenter
+      Item {
+        width: statusDot.width
+        height: pillLabel.implicitHeight
+
+        Rectangle {
+          id: statusDot
+          width: Style.space(6)
+          height: Style.space(6)
+          radius: width / 2
+          color: root.statusColor
+          anchors.centerIn: parent
+        }
       }
 
       Text {
+        id: pillLabel
         text: root.pillText
         textFormat: Text.PlainText
         color: Color.foreground
