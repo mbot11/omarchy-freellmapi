@@ -1,0 +1,35 @@
+{
+  "providers": [
+    {
+      "platform": "groq",
+      "name": "Groq",
+      "status": "healthy",
+      "keys": 1
+    },
+    {
+      "platform": "cloudflare",
+      "name": "Cloudflare Workers AI",
+      "status": "healthy",
+      "keys": 1
+    },
+    {
+      "platform": "pollinations",
+      "name": "Pollinations",
+      "status": "healthy",
+      "keys": 1
+    },
+    {
+      "platform": "openai",
+      "name": "OpenAI",
+      "status": "rate_limited",
+      "keys": 1,
+      "resume_at": "2026-09-15T18:00:00Z"
+    }
+  ],
+  "counts": {
+    "healthy": 3,
+    "rate_limited": 1,
+    "invalid": 0,
+    "unknown": 0
+  }
+}

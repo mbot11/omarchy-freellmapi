@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.mbot11.freellmapi",
+  "name": "FreeLLMAPI",
+  "version": "0.0.1",
+  "author": "mbot11",
+  "license": "MIT",
+  "description": "Read-only FreeLLMAPI gateway health and capabilities on the Omarchy bar.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "FreeLLMAPI",
+    "description": "FreeLLMAPI health, providers, chat, Fusion, media lanes, and quota.",
+    "category": "AI",
+    "aliases": ["fla", "freellmapi", "gateway"],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 60
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh (seconds)",
+        "min": 30,
+        "max": 3600,
+        "step": 30,
+        "defaultValue": 60
+      }
+    ]
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "auto",
+      "object": "model",
+      "created": 0,
+      "owned_by": "freellmapi",
+      "name": "Auto (router picks the best available model)",
+      "available": true,
+      "unavailable_reason": null
+    },
+    {
+      "id": "fusion",
+      "object": "model",
+      "created": 0,
+      "owned_by": "freellmapi",
+      "name": "Fusion (panel of models answer in parallel, a judge synthesizes one answer)",
+      "available": true,
+      "unavailable_reason": null
+    },
+    {
+      "id": "llama-3.1-8b",
+      "object": "model",
+      "created": 0,
+      "owned_by": "groq",
+      "name": "Llama 3.1 8B",
+      "available": true,
+      "unavailable_reason": null
+    },
+    {
+      "id": "gpt-4o",
+      "object": "model",
+      "created": 0,
+      "owned_by": "openai",
+      "name": "GPT-4o",
+      "available": false,
+      "unavailable_reason": "no_key"
+    }
+  ]
+}
