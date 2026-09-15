@@ -212,6 +212,16 @@ Light NuMust branding is **through the theme**, not a paint-over:
 - `/v1/models` is 288 rows today; always truncate the stored list.
 - Catalog overlay for Nova Reel is independent of this plugin; Media tab must not claim a video **count**.
 
-## Next
+## Public launch (prepare, do not submit in v0.0.1)
 
-User reviews this file. After explicit approval, write an implementation plan (`writing-plans`), then implement. No plugin QML/collector until that approval.
+The repo must be able to pass Omarchy marketplace listing later:
+
+- One plugin at git root: `manifest.json`, README (install AND removal), LICENSE MIT, optional `preview.png` ≤50 MB
+- `omarchy plugin validate` green
+- Security baseline: no curl-pipe-shell, no `/tmp` pid files, no sudo/pkexec, no argv secrets
+- Tests including a security-audit grep
+- Ids permanent; no `omarchy.*` namespace
+- Category AI (matches `manifest.json` and Hermes Deck/Memorix precedent); tags `ai`, `bar`, `quickshell` when listing
+- No marketplace issue, no `plugin add` from a public URL, no push, until explicit approval
+
+v0.0.1 still lands locally first. Public listing is a separate, approved step.

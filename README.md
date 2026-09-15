@@ -40,6 +40,7 @@ Removing the plugin does not stop the FreeLLMAPI gateway.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `refreshIntervalSec` | 60 | Collector poll interval (min 30, max 3600) |
+| `baseUrl` | `http://127.0.0.1:3001` | Gateway URL override. File `config.json` (mode 0600) in the plugin state dir: `${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/io.github.mbot11.freellmapi/config.json` |
 
 ## What it shows
 

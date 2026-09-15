@@ -578,7 +578,9 @@ Panel {
               Text {
                 width: parent.width
                 visible: root.filteredChatModels.length === 0
-                text: "Catalog empty."
+                text: (root.chatSnap.total || 0) > 0
+                      ? "No models match the filter."
+                      : "Catalog empty."
                 textFormat: Text.PlainText
                 wrapMode: Text.WordWrap
                 color: Color.muted
