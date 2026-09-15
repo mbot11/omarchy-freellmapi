@@ -13,6 +13,10 @@ CURL_ARGV = ["curl", "-sS", "-f", "-m", "8", "-K", "-"]
 PLUGIN_STATE = Path("omarchy") / "io.github.mbot11.freellmapi"
 
 
+class MissingKeyError(RuntimeError):
+    pass
+
+
 def state_dir():
     xdg = os.environ.get("XDG_STATE_HOME")
     if xdg:
@@ -104,7 +108,7 @@ def fetch_all(base, key):
     livez = http_get(f"{base}/livez")
     readyz = http_get(f"{base}/readyz")
     if not key:
-        raise RuntimeError("missing FREELLMAPI_UNIFIED_KEY")
+        raise MissingKeyError("missing FREELLMAPI_UNIFIED_KEY")
     providers = http_get(f"{base}/v1/providers", key=key)
     quota = http_get(f"{base}/v1/quota-forecast", key=key)
     models = http_get(f"{base}/v1/models", key=key)
@@ -115,16 +119,30 @@ def main(argv=None):
     if argv is None:
         argv = sys.argv[1:]
     dest = state_dir() / "state.json"
+    previous = _load_previous(dest)
+    base = load_base_url()
+    key = load_key()
+    livez = None
+    readyz = None
     try:
-        state = fetch_all(load_base_url(), load_key())
+        # Live/ready are fetched separately so their outcome survives a later
+        # failure: normalize_state rebuilds gateway.live/ready from them.
+        livez = http_get(f"{base}/livez")
+        readyz = http_get(f"{base}/readyz")
+        if not key:
+            raise MissingKeyError("missing FREELLMAPI_UNIFIED_KEY")
+        providers = http_get(f"{base}/v1/providers", key=key)
+        quota = http_get(f"{base}/v1/quota-forecast", key=key)
+        models = http_get(f"{base}/v1/models", key=key)
+        state = normalize_state(livez, readyz, providers, quota, models)
     except Exception as exc:
         state = normalize_state(
+            livez,
+            readyz,
             None,
             None,
             None,
-            None,
-            None,
-            previous=_load_previous(dest),
+            previous=previous,
             error=str(exc),
         )
     atomic_write(dest, state)

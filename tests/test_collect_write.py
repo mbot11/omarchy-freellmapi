@@ -107,7 +107,9 @@ class CollectWriteTests(unittest.TestCase):
         data = json.loads(self.state_path.read_text())
         self.assertTrue(data["stale"])
         self.assertEqual(data["chat"]["total"], previous["chat"]["total"])
-        self.assertTrue(data["gateway"]["live"])
+        # Gateway was down when the error hit: the stale snapshot must show it.
+        self.assertFalse(data["gateway"]["live"])
+        self.assertFalse(data["gateway"]["ready"])
 
     def test_http_get_puts_key_on_stdin_not_argv(self):
         calls = []
@@ -164,6 +166,10 @@ class CollectWriteTests(unittest.TestCase):
         self.assertTrue(data["stale"])
         self.assertEqual(data["chat"]["total"], previous["chat"]["total"])
         self.assertIn("missing FREELLMAPI_UNIFIED_KEY", data.get("error") or "")
+        # livez/readyz answered ok before the key guard tripped: gateway stays up
+        # (amber first-run case), only the /v1 set is unavailable.
+        self.assertTrue(data["gateway"]["live"])
+        self.assertTrue(data["gateway"]["ready"])
 
     def test_http_get_raises_on_401_json(self):
         server, thread = serve_json({"/v1/models": (401, b'{"error":"unauthorized"}')})

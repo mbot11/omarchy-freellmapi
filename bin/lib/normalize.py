@@ -147,9 +147,29 @@ def _normalize_gateway(livez, readyz):
     }
 
 
+def _rebuild_gateway_on_error(livez, readyz, previous_gateway):
+    prev = previous_gateway if isinstance(previous_gateway, dict) else {}
+    live = livez if isinstance(livez, dict) else None
+    ready = readyz if isinstance(readyz, dict) else None
+    return {
+        "version": live.get("version") if live is not None and "version" in live else prev.get("version"),
+        "uptime_s": live.get("uptime_s") if live is not None and "uptime_s" in live else prev.get("uptime_s", 0),
+        "live": live is not None and live.get("status") == "ok",
+        "ready": ready is not None and ready.get("status") == "ok",
+        "ready_upstreams": (
+            ready.get("ready_upstreams")
+            if ready is not None and "ready_upstreams" in ready
+            else prev.get("ready_upstreams", 0)
+        ),
+    }
+
+
 def normalize_state(livez, readyz, providers, quota, models, previous=None, error=None, fetched_at=None):
     if error and previous:
         out = copy.deepcopy(previous)
+        out["gateway"] = _rebuild_gateway_on_error(
+            livez, readyz, previous.get("gateway") if isinstance(previous, dict) else None
+        )
         out["error"] = error
         out["stale"] = True
         if fetched_at is not None:
