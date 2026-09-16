@@ -15,10 +15,10 @@ This widget is a companion for — and requires — [FreeLLMAPI](https://github.
 
 ## Install
 
-From a local clone of this repo (no public remote yet):
+Install from this repo:
 
 ```bash
-omarchy plugin add "$(pwd)" --enable
+omarchy plugin add https://github.com/mbot11/omarchy-freellmapi.git --enable
 ```
 
 Or symlink the clone to `~/.config/omarchy/plugins/io.github.mbot11.freellmapi` and enable it from bar settings. The pill lands on the right section. Do not enable until you intend to load it in the live shell.
