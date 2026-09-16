@@ -209,6 +209,21 @@ class CollectWriteTests(unittest.TestCase):
         self.assertTrue(data["stale"])
         self.assertEqual(data["chat"]["total"], previous["chat"]["total"])
 
+    def test_base_url_with_newline_falls_back_to_default(self):
+        import json as _json
+        d = tempfile.mkdtemp()
+        sub = os.path.join(d, "omarchy", "io.github.mbot11.freellmapi")
+        os.makedirs(sub)
+        cfgp = os.path.join(sub, "config.json")
+        open(cfgp, "w").write(_json.dumps({"baseUrl": "http://127.0.0.1:3001\n-X /tmp/pwned"}))
+        real_state = self.mod.state_dir
+        self.mod.state_dir = lambda: __import__("pathlib").Path(sub)
+        try:
+            self.assertEqual(self.mod.load_base_url(), self.mod.DEFAULT_BASE)
+        finally:
+            self.mod.state_dir = real_state
+
+
 
 if __name__ == "__main__":
     unittest.main()

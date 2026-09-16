@@ -52,7 +52,13 @@ def load_base_url():
         return DEFAULT_BASE
     url = data.get("baseUrl") if isinstance(data, dict) else None
     if isinstance(url, str) and url.strip():
-        return url.strip().rstrip("/")
+        cleaned = url.strip().rstrip("/")
+        # curl -K parses each line as a directive: a newline smuggled inside
+        # baseUrl would let config.json inject arbitrary curl options. The
+        # value must be a bare URL — reject any control character outright.
+        if any(ord(ch) < 0x20 or ch == "\x7f" for ch in cleaned):
+            return DEFAULT_BASE
+        return cleaned
     return DEFAULT_BASE
 
 
