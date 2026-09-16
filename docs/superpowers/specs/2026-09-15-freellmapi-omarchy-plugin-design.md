@@ -3,7 +3,7 @@
 Date: 2026-09-15
 Status: draft for user review
 Plugin id: `io.github.mbot11.freellmapi`
-Repo (local only): `this repo`
+Repo (local only)
 
 ## Problem
 

@@ -284,7 +284,7 @@ git commit -am "feat: six-tab FreeLLMAPI capabilities popup"
 
 - [ ] **Step 1: Enable without `plugin add` from git**
 
-Copy or symlink `this repo` → `~/.config/omarchy/plugins/io.github.mbot11.freellmapi` if Omarchy requires the plugin dir (do **not** `plugin add` a remote). Prefer:
+Copy or symlink this repo → `~/.config/omarchy/plugins/io.github.mbot11.freellmapi` if Omarchy requires the plugin dir (do **not** `plugin add` a remote). Prefer:
 
 ```bash
 ln -sfn "$(pwd)" ~/.config/omarchy/plugins/io.github.mbot11.freellmapi
