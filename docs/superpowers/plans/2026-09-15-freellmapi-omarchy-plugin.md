@@ -129,7 +129,7 @@ python3 tests/test_normalize.py -v
 `manifest.json` schemaVersion 1, id `io.github.mbot11.freellmapi`, kinds `["bar-widget"]`, entryPoints `{barWidget: Panel.qml}`, barWidget schema `refreshIntervalSec` min 30 max 3600 default 60. Minimal `Panel.qml`: `import QtQuick; Item { visible: false; property var settings: ({}) }`.
 
 ```bash
-omarchy plugin validate $(pwd)
+omarchy plugin validate "$(pwd)"
 ```
 
 Expected: pass (entry point exists).
@@ -137,7 +137,7 @@ Expected: pass (entry point exists).
 - [ ] **Step 6: Commit**
 
 ```bash
-cd $(pwd)
+cd "$(pwd)"  # repo root
 git init
 git add -A
 git commit -m "test: normalize FreeLLMAPI gateway state"
@@ -287,7 +287,7 @@ git commit -am "feat: six-tab FreeLLMAPI capabilities popup"
 Copy or symlink `this repo` → `~/.config/omarchy/plugins/io.github.mbot11.freellmapi` if Omarchy requires the plugin dir (do **not** `plugin add` a remote). Prefer:
 
 ```bash
-ln -sfn $(pwd) ~/.config/omarchy/plugins/io.github.mbot11.freellmapi
+ln -sfn "$(pwd)" ~/.config/omarchy/plugins/io.github.mbot11.freellmapi
 export OMARCHY_SHELL_IPC_TIMEOUT=25s
 omarchy plugin enable io.github.mbot11.freellmapi right
 ```
