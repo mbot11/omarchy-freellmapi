@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.mbot11.freellmapi",
   "name": "FreeLLMAPI",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "author": "mbot11",
   "license": "MIT",
   "description": "Read-only FreeLLMAPI gateway health and capabilities on the Omarchy bar.",

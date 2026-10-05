@@ -51,7 +51,9 @@ check, or analytics. QML performs no network I/O.
 ## Dangerous-pattern posture
 
 - No `shell=True`, `os.system`, `eval`, or `exec` anywhere; the only
-  subprocess is curl with a fixed argv list.
+  subprocess is curl with a fixed argv list. `localhost` is pinned with
+  `--resolve` to the loopback addresses already checked, and a response
+  without curl's status line is a failure, not HTTP 200.
 - No `/tmp` pid files; no `pkexec`/`sudo`/`docker`; no systemctl; the
   plugin cannot start, stop, or configure anything.
 - No hardcoded secrets: the security-grep test

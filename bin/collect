@@ -175,9 +175,38 @@ def _split_http(stdout):
     if len(stdout) > MAX_BODY + 16:
         raise RuntimeError("response too large")
     body, sep, code = stdout.rpartition("\n")
-    if sep and code.isdigit():
-        return body, int(code)
-    return stdout, 200
+    if not sep or not code.isdigit():
+        raise RuntimeError("request failed")
+    return body, int(code)
+
+
+def _pin_args(url):
+    parsed = urlsplit(url)
+    host = parsed.hostname
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    if host == "localhost":
+        try:
+            infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        except socket.gaierror as exc:
+            raise RuntimeError("request failed") from exc
+        ips = []
+        for info in infos:
+            try:
+                ip = ipaddress.ip_address(info[4][0])
+            except ValueError as exc:
+                raise RuntimeError("request failed") from exc
+            if not ip.is_loopback:
+                raise RuntimeError("request failed")
+            ips.append(ip.compressed)
+        if not ips:
+            raise RuntimeError("request failed")
+    else:
+        ips = [host]
+    args = []
+    for ip in dict.fromkeys(ips):
+        address = "[" + ip + "]" if ":" in ip else ip
+        args.extend(["--resolve", host + ":" + str(port) + ":" + address])
+    return args
 
 
 def http_get(url, key=None):
@@ -186,8 +215,9 @@ def http_get(url, key=None):
     if key:
         _reject_controls(key, "key")
         lines.append('header = "Authorization: Bearer ' + key + '"')
+    argv = CURL_ARGV[:-2] + _pin_args(url) + CURL_ARGV[-2:]
     proc = subprocess.run(
-        CURL_ARGV,
+        argv,
         input="\n".join(lines) + "\n",
         capture_output=True,
         text=True,

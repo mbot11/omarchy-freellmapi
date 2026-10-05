@@ -116,7 +116,7 @@ class CollectWriteTests(unittest.TestCase):
 
         class Result:
             returncode = 0
-            stdout = '{"status":"ok"}'
+            stdout = '{"status":"ok"}\n200'
             stderr = ""
 
         def fake_run(argv, input=None, capture_output=None, text=None, env=None, **kwargs):
@@ -135,7 +135,8 @@ class CollectWriteTests(unittest.TestCase):
         expected = [
             "curl", "-q", "--noproxy", "*", "--proto", "=http,https",
             "--max-redirs", "0", "--max-filesize", "262144",
-            "-sS", "-m", "8", "-w", "\n%{http_code}", "-K", "-",
+            "-sS", "-m", "8", "-w", "\n%{http_code}",
+            "--resolve", "127.0.0.1:3001:127.0.0.1", "-K", "-",
         ]
         self.assertEqual(len(calls), 2)
         auth_argv, auth_in = calls[0]
@@ -316,7 +317,7 @@ class CollectWriteTests(unittest.TestCase):
 
         class Result:
             returncode = 0
-            stdout = '{"status":"ok"}'
+            stdout = '{"status":"ok"}\n200'
             stderr = ""
 
         def fake_run(argv, input=None, capture_output=None, text=None, env=None, **kwargs):
@@ -342,6 +343,23 @@ class CollectWriteTests(unittest.TestCase):
         self.assertFalse(any(name.lower() in {"http_proxy", "https_proxy", "all_proxy"} for name in env))
         self.assertIn("test-unified-key", stdin_cfg)
         self.assertNotIn("should-not-leak", self.mod.safe_error("Authorization: Bearer should-not-leak"))
+        self.assertIn("--resolve", argv)
+        resolve = argv[argv.index("--resolve") + 1]
+        self.assertTrue(resolve.startswith("127.0.0.1:9:"))
+
+    def test_missing_http_status_line_is_a_failure(self):
+        class Result:
+            returncode = 0
+            stdout = '{"status":"ok"}'
+            stderr = ""
+
+        original = self.mod.subprocess.run
+        self.mod.subprocess.run = lambda *args, **kwargs: Result()
+        try:
+            with self.assertRaises(RuntimeError):
+                self.mod.http_get("http://127.0.0.1:9/livez")
+        finally:
+            self.mod.subprocess.run = original
 
     def test_schema_error_keeps_fresh_gateway_status(self):
         self.mod.http_get = fixture_payload

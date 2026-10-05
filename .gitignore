@@ -4,4 +4,7 @@ __pycache__/
 .pytest_cache/
 tests/tmp/
 SECURITY-AUDIT.md
+preview-cover.png
+preview-public.png
+preview-tab-*.png
 .worktrees/
