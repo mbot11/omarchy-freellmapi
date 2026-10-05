@@ -1,19 +1,39 @@
 #!/usr/bin/python3
+import fcntl
+import ipaddress
 import json
 import os
+import secrets
+import socket
+import stat
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lib.normalize import normalize_state
 
 DEFAULT_BASE = "http://127.0.0.1:3001"
-CURL_ARGV = ["curl", "-sS", "-f", "-m", "8", "-K", "-"]
+CURL_ARGV = [
+    "curl", "-q", "--noproxy", "*", "--proto", "=http,https",
+    "--max-redirs", "0", "--max-filesize", "262144",
+    "-sS", "-m", "8", "-w", "\n%{http_code}", "-K", "-",
+]
 PLUGIN_STATE = Path("omarchy") / "io.github.mbot11.freellmapi"
+PROXY_ENV = {
+    "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "CURL_HOME",
+}
+MAX_BODY = 262144
+MAX_ENV_BYTES = 1_000_000
 
 
 class MissingKeyError(RuntimeError):
+    pass
+
+
+class ConfigError(RuntimeError):
     pass
 
 
@@ -24,11 +44,115 @@ def state_dir():
     return Path.home() / ".local" / "state" / PLUGIN_STATE
 
 
+def safe_error(exc):
+    text = exc if isinstance(exc, str) else str(exc)
+    if text.startswith("http ") and text[5:].isdigit():
+        return text
+    if "Bearer" in text or "Authorization" in text or "\n" in text or "\r" in text:
+        return "request failed"
+    allowed = (
+        "invalid json", "response too large", "missing FREELLMAPI_UNIFIED_KEY",
+        "key file unreadable", "request failed",
+    )
+    if text in allowed or text.startswith("baseUrl must"):
+        return text[:160]
+    if text.endswith("payload missing providers") or text.endswith("payload missing pools") or text.endswith("payload missing data"):
+        return text[:160]
+    if "must be" in text:
+        return text[:160]
+    if text.isascii() and len(text) <= 160 and "/" not in text and " " not in text:
+        return text
+    return "request failed"
+
+
+def _curl_env():
+    return {key: value for key, value in os.environ.items() if key not in PROXY_ENV}
+
+
+def _reject_controls(value, label):
+    if any(ord(ch) < 0x20 or ch == "\x7f" or ch in '"\\' for ch in value):
+        raise RuntimeError("unsafe " + label)
+
+
+def validate_loopback(url):
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password:
+        raise ConfigError("baseUrl must be a loopback http(s) URL")
+    if parsed.query or parsed.fragment or parsed.path not in {"", "/"}:
+        raise ConfigError("baseUrl must be a loopback http(s) URL")
+    host = parsed.hostname
+    if host in {"127.0.0.1", "::1"}:
+        if not ipaddress.ip_address(host).is_loopback:
+            raise ConfigError("baseUrl must be a loopback http(s) URL")
+    elif host != "localhost":
+        raise ConfigError("baseUrl must be a loopback http(s) URL")
+    else:
+        port_lookup = parsed.port or (443 if parsed.scheme == "https" else 80)
+        try:
+            infos = socket.getaddrinfo(host, port_lookup, type=socket.SOCK_STREAM)
+        except socket.gaierror as exc:
+            raise ConfigError("baseUrl must be a loopback http(s) URL") from exc
+        if not infos:
+            raise ConfigError("baseUrl must be a loopback http(s) URL")
+        for info in infos:
+            try:
+                ip = ipaddress.ip_address(info[4][0])
+            except ValueError as exc:
+                raise ConfigError("baseUrl must be a loopback http(s) URL") from exc
+            if not ip.is_loopback:
+                raise ConfigError("baseUrl must be a loopback http(s) URL")
+    host_part = "[" + host + "]" if ":" in host else host
+    if parsed.port:
+        return parsed.scheme + "://" + host_part + ":" + str(parsed.port)
+    return parsed.scheme + "://" + host_part
+
+
+def load_base_url():
+    cfg = state_dir() / "config.json"
+    if not cfg.exists():
+        return DEFAULT_BASE
+    try:
+        info = os.lstat(cfg)
+    except OSError:
+        return DEFAULT_BASE
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise ConfigError("baseUrl must be a loopback http(s) URL")
+    try:
+        fd = os.open(cfg, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            data = json.loads(handle.read(65536))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return DEFAULT_BASE
+    url = data.get("baseUrl") if isinstance(data, dict) else None
+    if not isinstance(url, str) or not url.strip():
+        return DEFAULT_BASE
+    cleaned = url.strip().rstrip("/")
+    if any(ord(ch) < 0x20 or ch == "\x7f" for ch in cleaned):
+        return DEFAULT_BASE
+    return validate_loopback(cleaned)
+
+
 def load_key():
     env_path = Path.home() / ".env"
-    if not env_path.is_file():
+    try:
+        info = os.lstat(env_path)
+    except FileNotFoundError:
         return None
-    for raw in env_path.read_text(encoding="utf-8").splitlines():
+    except OSError as exc:
+        raise OSError("key file unreadable") from exc
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise OSError("key file unreadable")
+    if info.st_uid != os.getuid() or (info.st_mode & 0o077) or info.st_size > MAX_ENV_BYTES:
+        raise OSError("key file unreadable")
+    fd = os.open(env_path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            fd = None
+            raw_text = handle.read(MAX_ENV_BYTES)
+    finally:
+        if fd is not None:
+            os.close(fd)
+    for raw in raw_text.splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
@@ -37,67 +161,91 @@ def load_key():
         if "=" not in line:
             continue
         name, _, value = line.partition("=")
-        if name.strip() == "FREELLMAPI_UNIFIED_KEY":
-            return value.strip().strip("'").strip('"') or None
+        if name.strip() != "FREELLMAPI_UNIFIED_KEY":
+            continue
+        key = value.strip().strip("'").strip('"')
+        if not key:
+            return None
+        _reject_controls(key, "key")
+        return key
     return None
 
 
-def load_base_url():
-    cfg = state_dir() / "config.json"
-    if not cfg.is_file():
-        return DEFAULT_BASE
-    try:
-        data = json.loads(cfg.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return DEFAULT_BASE
-    url = data.get("baseUrl") if isinstance(data, dict) else None
-    if isinstance(url, str) and url.strip():
-        cleaned = url.strip().rstrip("/")
-        # curl -K parses each line as a directive: a newline smuggled inside
-        # baseUrl would let config.json inject arbitrary curl options. The
-        # value must be a bare URL — reject any control character outright.
-        if any(ord(ch) < 0x20 or ch == "\x7f" for ch in cleaned):
-            return DEFAULT_BASE
-        return cleaned
-    return DEFAULT_BASE
+def _split_http(stdout):
+    if len(stdout) > MAX_BODY + 16:
+        raise RuntimeError("response too large")
+    body, sep, code = stdout.rpartition("\n")
+    if sep and code.isdigit():
+        return body, int(code)
+    return stdout, 200
 
 
 def http_get(url, key=None):
-    lines = [f"url={url}"]
+    _reject_controls(url, "url")
+    lines = ["url=" + url]
     if key:
-        lines.append(f'header = "Authorization: Bearer {key}"')
-    config = "\n".join(lines) + "\n"
+        _reject_controls(key, "key")
+        lines.append('header = "Authorization: Bearer ' + key + '"')
     proc = subprocess.run(
         CURL_ARGV,
-        input=config,
+        input="\n".join(lines) + "\n",
         capture_output=True,
         text=True,
+        env=_curl_env(),
     )
     if proc.returncode != 0:
-        err = (proc.stderr or "").strip() or f"curl exit {proc.returncode}"
-        raise RuntimeError(err)
+        raise RuntimeError("request failed")
+    body, code = _split_http(proc.stdout or "")
+    health = url.rstrip("/").endswith("/livez") or url.rstrip("/").endswith("/readyz")
+    if health:
+        if code not in (200, 503):
+            raise RuntimeError("http " + str(code))
+    elif code < 200 or code >= 300:
+        raise RuntimeError("http " + str(code))
     try:
-        return json.loads(proc.stdout)
+        payload = json.loads(body)
     except json.JSONDecodeError as exc:
         raise RuntimeError("invalid json") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("invalid json")
+    return payload
 
 
 def _load_previous(path):
     if not path.is_file():
         return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        info = os.lstat(path)
+        if stat.S_ISLNK(info.st_mode):
+            return None
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            data = json.loads(handle.read(MAX_BODY))
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return None
     return data if isinstance(data, dict) else None
 
 
+def _lock():
+    dest = state_dir()
+    dest.mkdir(parents=True, exist_ok=True)
+    os.chmod(dest, 0o700, follow_symlinks=False)
+    fd = os.open(dest / ".collect.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    os.fchmod(fd, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    return fd
+
+
 def atomic_write(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
+    os.chmod(path.parent, 0o700)
     payload = json.dumps(data, separators=(",", ":"), ensure_ascii=True)
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    if len(payload.encode("utf-8")) >= 100_000:
+        raise ValueError("normalized state exceeds 100 KB")
+    tmp = path.with_name("." + path.name + "." + str(os.getpid()) + "." + secrets.token_hex(4) + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
+        os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             fd = None
             handle.write(payload)
@@ -106,53 +254,83 @@ def atomic_write(path, data):
     finally:
         if fd is not None:
             os.close(fd)
-    os.chmod(tmp, 0o600)
     os.replace(tmp, path)
 
 
-def fetch_all(base, key):
-    livez = http_get(f"{base}/livez")
-    readyz = http_get(f"{base}/readyz")
-    if not key:
-        raise MissingKeyError("missing FREELLMAPI_UNIFIED_KEY")
-    providers = http_get(f"{base}/v1/providers", key=key)
-    quota = http_get(f"{base}/v1/quota-forecast", key=key)
-    models = http_get(f"{base}/v1/models", key=key)
-    return normalize_state(livez, readyz, providers, quota, models)
+def _attempt(fn, *args):
+    try:
+        return fn(*args), None
+    except Exception as exc:
+        return None, safe_error(exc)
+
+
+def _checked(payload, key):
+    if not isinstance(payload, dict) or not isinstance(payload.get(key), list):
+        raise ValueError(key + " payload missing " + key)
+
+
+def _write_error(dest, previous, message, live=None, ready=None):
+    state = normalize_state(live, ready, None, None, None, previous=previous, error=safe_error(message))
+    state["capabilities_fresh"] = False
+    atomic_write(dest, state)
 
 
 def main(argv=None):
     if argv is None:
         argv = sys.argv[1:]
     dest = state_dir() / "state.json"
-    previous = _load_previous(dest)
-    base = load_base_url()
-    key = load_key()
-    livez = None
-    readyz = None
+    lock_fd = _lock()
     try:
-        # Live/ready are fetched separately so their outcome survives a later
-        # failure: normalize_state rebuilds gateway.live/ready from them.
-        livez = http_get(f"{base}/livez")
-        readyz = http_get(f"{base}/readyz")
-        if not key:
-            raise MissingKeyError("missing FREELLMAPI_UNIFIED_KEY")
-        providers = http_get(f"{base}/v1/providers", key=key)
-        quota = http_get(f"{base}/v1/quota-forecast", key=key)
-        models = http_get(f"{base}/v1/models", key=key)
-        state = normalize_state(livez, readyz, providers, quota, models)
-    except Exception as exc:
-        state = normalize_state(
-            livez,
-            readyz,
-            None,
-            None,
-            None,
-            previous=previous,
-            error=str(exc),
-        )
-    atomic_write(dest, state)
-    return 0
+        previous = _load_previous(dest)
+        try:
+            base = load_base_url()
+            try:
+                key = load_key()
+                key_error = None
+            except OSError:
+                key = None
+                key_error = "key file unreadable"
+            live, live_err = _attempt(http_get, base + "/livez")
+            ready, ready_err = _attempt(http_get, base + "/readyz")
+            section_error = key_error
+            providers = quota = models = None
+            if section_error is None and not key:
+                section_error = "missing FREELLMAPI_UNIFIED_KEY"
+            elif section_error is None:
+                providers, err = _attempt(http_get, base + "/v1/providers", key)
+                quota, quota_err = _attempt(http_get, base + "/v1/quota-forecast", key)
+                models, model_err = _attempt(http_get, base + "/v1/models", key)
+                section_error = err or quota_err or model_err
+                if section_error is None:
+                    try:
+                        _checked(providers, "providers")
+                        _checked(quota, "pools")
+                        _checked(models, "data")
+                        state = normalize_state(live, ready, providers, quota, models)
+                    except Exception as exc:
+                        section_error = safe_error(exc)
+                    else:
+                        state["capabilities_fresh"] = True
+                        notes = [item for item in (live_err, ready_err) if item]
+                        if isinstance(ready, dict) and ready.get("status") != "ok":
+                            reason = ready.get("reason")
+                            notes.append(reason if isinstance(reason, str) else "readyz unavailable")
+                        if notes:
+                            state["error"] = safe_error("; ".join(notes)[:160])
+                            state["stale"] = False
+                        atomic_write(dest, state)
+                        return 0
+            if section_error:
+                _write_error(dest, previous, section_error, live, ready)
+                return 0
+            _write_error(dest, previous, "request failed", live, ready)
+            return 0
+        except Exception as exc:
+            _write_error(dest, previous, safe_error(exc))
+            return 0
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
 
 
 if __name__ == "__main__":

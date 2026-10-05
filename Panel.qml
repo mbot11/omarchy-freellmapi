@@ -23,6 +23,10 @@ Panel {
   property string chatQuery: ""
   property var sortedProviders: []
   property var filteredChatModels: []
+  property double nowMs: 0
+  property int previousReady: -1
+  property bool readyDropped: false
+  property string collectorError: ""
 
   readonly property var gateway: (root.snap && root.snap.gateway) ? root.snap.gateway : ({})
   readonly property bool gatewayLive: root.gateway.live === true
@@ -32,10 +36,12 @@ Panel {
     if (root.gatewayDown) return false
     var s = root.snap
     if (s && s.error) return true
+    if (root.readyDropped) return true
     var list = s && s.providers
     if (!list || !list.length) return false
     for (var i = 0; i < list.length; i++) {
-      if (list[i] && list[i].status === "rate_limited") return true
+      var status = list[i] && list[i].status
+      if (status === "rate_limited" || status === "invalid") return true
     }
     return false
   }
@@ -50,8 +56,8 @@ Panel {
     return "Ready"
   }
   readonly property string pillCount: {
-    var list = root.snap && root.snap.providers
-    if (!list || !list.length) return "?"
+    var s = root.snap
+    if (!s || s.capabilities_fresh !== true || root.missingUnifiedKey) return "?"
     var n = root.gateway.ready_upstreams
     if (n === undefined || n === null) return "?"
     return String(n)
@@ -73,16 +79,30 @@ Panel {
     try { return decodeURIComponent(s) } catch (e) { return s }
   }
 
+  function isArray(value) {
+    return Object.prototype.toString.call(value) === "[object Array]"
+  }
+
   function parseSnap(raw) {
     try {
       var parsed = JSON.parse(String(raw || ""))
-      if (parsed && typeof parsed === "object") root.snap = parsed
+      if (!parsed || typeof parsed !== "object" || root.isArray(parsed)) return
+      if (parsed.providers !== undefined && !root.isArray(parsed.providers)) {
+        root.collectorError = "state schema invalid"
+        return
+      }
+      if (parsed.chat && parsed.chat.models !== undefined && !root.isArray(parsed.chat.models)) {
+        root.collectorError = "state schema invalid"
+        return
+      }
+      root.collectorError = ""
+      root.snap = parsed
     } catch (e) { /* keep last good */ }
   }
 
   function refresh() {
     if (collectProc.running) return
-    collectProc.command = ["python3", root.collectorPath]
+    collectProc.command = ["/usr/bin/python3", root.collectorPath]
     collectProc.running = true
   }
 
@@ -107,7 +127,7 @@ Panel {
     if (!iso) return "never"
     var t = Date.parse(iso)
     if (!isFinite(t)) return String(iso)
-    var sec = Math.max(0, Math.floor((Date.now() - t) / 1000))
+    var sec = Math.max(0, Math.floor((root.nowMs - t) / 1000))
     return root.formatDuration(sec) + " ago"
   }
 
@@ -122,6 +142,8 @@ Panel {
     var s = row && row.status
     if (s === "healthy") return "healthy"
     if (s === "rate_limited") return "cooling"
+    if (s === "unknown") return "unknown"
+    if (s === "invalid") return "invalid"
     return "down"
   }
 
@@ -187,7 +209,15 @@ Panel {
     root.rebuildLists()
     refresh()
   }
-  onSnapChanged: root.rebuildLists()
+  onSnapChanged: {
+    root.rebuildLists()
+    var fresh = root.snap && root.snap.capabilities_fresh === true && root.gatewayReady
+    var n = Number(root.gateway.ready_upstreams)
+    if (fresh && isFinite(n)) {
+      root.readyDropped = root.previousReady >= 0 && n < root.previousReady
+      root.previousReady = n
+    }
+  }
   onChatQueryChanged: root.rebuildLists()
   onOpenedChanged: if (opened) {
     refresh()
@@ -205,7 +235,19 @@ Panel {
 
   Process {
     id: collectProc
-    onExited: stateFile.reload()
+    onExited: function(exitCode) {
+      if (exitCode !== 0)
+        root.collectorError = "collector failed"
+      stateFile.reload()
+    }
+  }
+
+  Timer {
+    interval: 1000
+    running: true
+    repeat: true
+    triggeredOnStart: true
+    onTriggered: root.nowMs = Date.now()
   }
 
   Timer {
@@ -285,6 +327,16 @@ Panel {
       anchors.fill: parent
       blocked: chatFilter.activeFocus
       onCloseRequested: root.close()
+      onActivateRequested: root.toggle()
+      onMoveRequested: function(dx, dy) {
+        if (!bodyScroll.interactive) return
+        var step = Style.space(48)
+        var next = bodyScroll.contentY + (dy * step)
+        if (next < 0) next = 0
+        var maxY = Math.max(0, bodyScroll.contentHeight - bodyScroll.height)
+        if (next > maxY) next = maxY
+        bodyScroll.contentY = next
+      }
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(t) {
         if (t === "r" || t === "R") root.refresh()
@@ -415,7 +467,7 @@ Panel {
               Text {
                 width: parent.width
                 visible: !root.gatewayLive
-                text: "No process on 127.0.0.1:3001"
+                text: "Gateway liveness probe failed"
                 textFormat: Text.PlainText
                 wrapMode: Text.WordWrap
                 color: Color.urgent
@@ -438,6 +490,17 @@ Panel {
                 width: parent.width
                 visible: !!(root.snap && root.snap.error)
                 text: root.snap && root.snap.error ? String(root.snap.error) : ""
+                textFormat: Text.PlainText
+                wrapMode: Text.WordWrap
+                color: Color.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+              }
+
+              Text {
+                width: parent.width
+                visible: !!(root.collectorError)
+                text: root.collectorError
                 textFormat: Text.PlainText
                 wrapMode: Text.WordWrap
                 color: Color.muted
@@ -577,9 +640,22 @@ Panel {
 
               Text {
                 width: parent.width
+                visible: !!root.chatSnap.truncated
+                text: "Showing " + String(root.chatSnap.listed || 0) + " of "
+                      + String(root.chatSnap.total || 0)
+                      + ". Filter searches displayed models."
+                textFormat: Text.PlainText
+                wrapMode: Text.WordWrap
+                color: Color.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+              }
+
+              Text {
+                width: parent.width
                 visible: root.filteredChatModels.length === 0
                 text: (root.chatSnap.total || 0) > 0
-                      ? "No models match the filter."
+                      ? (root.chatSnap.truncated ? "No matches in displayed models." : "No models match the filter.")
                       : "Catalog empty."
                 textFormat: Text.PlainText
                 wrapMode: Text.WordWrap
@@ -720,7 +796,7 @@ Panel {
                           var from = modelData && modelData.from
                           if (modelData && modelData.modality === "embeddings") return "not in /v1/models"
                           if (!from || !from.length) return "counts unknown"
-                          return from.join(", ")
+                          return "inferred: " + from.join(", ")
                         }
                         textFormat: Text.PlainText
                         color: Color.muted

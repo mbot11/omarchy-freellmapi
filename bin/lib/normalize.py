@@ -1,58 +1,102 @@
 import copy
+import math
 from datetime import datetime, timezone
 
 CHAT_LIST_CAP = 80
+PROVIDER_CAP = 64
+QUOTA_CAP = 40
+TEXT_CAP = 240
+STATE_BUDGET = 100_000
 MEDIA_INFER = {
     "cloudflare": ["image", "audio"],
     "groq": ["transcription"],
     "pollinations": ["video"],
 }
-
 _MEDIA_ORDER = ("image", "audio", "transcription", "video", "embeddings")
-
-
-def _as_list(payload, key=None):
-    if payload is None:
-        return []
-    if isinstance(payload, list):
-        return payload
-    if isinstance(payload, dict) and key is not None:
-        inner = payload.get(key)
-        if isinstance(inner, list):
-            return inner
-    return []
+_QUOTA_FIELDS = (
+    "platform",
+    "pool",
+    "used",
+    "remaining",
+    "limit",
+    "remaining_pct",
+    "reset_at",
+    "low_balance",
+    "seconds_until_reset",
+    "rate_per_min",
+    "estimated_exhaustion_at",
+)
 
 
 def _iso_now():
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _text(value):
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("text field must be a string")
+    return value[:TEXT_CAP]
+
+
+def _bool(value, label):
+    if not isinstance(value, bool):
+        raise ValueError(f"{label} must be a boolean")
+    return value
+
+
+def _number(value, label):
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ValueError(f"{label} must be a finite number")
+    return value
+
+
+def _require_rows(payload, key):
+    if payload is None:
+        return None
+    if not isinstance(payload, dict) or not isinstance(payload.get(key), list):
+        raise ValueError(f"{key} payload missing {key}")
+    return payload[key]
+
+
 def _slim_model(row):
+    if not isinstance(row, dict) or not isinstance(row.get("id"), str) or not row["id"]:
+        raise ValueError("model row must include an id")
     return {
-        "id": row.get("id"),
-        "name": row.get("name"),
-        "available": bool(row.get("available")),
-        "unavailable_reason": row.get("unavailable_reason"),
+        "id": _text(row.get("id")),
+        "name": _text(row.get("name")),
+        "available": _bool(row.get("available"), "available"),
+        "unavailable_reason": _text(row.get("unavailable_reason")),
     }
 
 
 def _normalize_providers(providers):
+    rows = _require_rows(providers, "providers")
+    if rows is None:
+        return []
     out = []
-    for row in _as_list(providers, "providers"):
+    for row in rows[:PROVIDER_CAP]:
+        if not isinstance(row, dict):
+            raise ValueError("provider row must be an object")
         out.append({
-            "platform": row.get("platform"),
-            "name": row.get("name"),
-            "status": row.get("status"),
-            "keys": row.get("keys"),
-            "resume_at": row.get("resume_at"),
-            "requests_remaining_pct": row.get("requests_remaining_pct"),
-            "last_error": row.get("last_error"),
+            "platform": _text(row.get("platform")),
+            "name": _text(row.get("name")),
+            "status": _text(row.get("status")),
+            "keys": _number(row.get("keys"), "keys"),
+            "resume_at": _text(row.get("resume_at")),
+            "requests_remaining_pct": _number(row.get("requests_remaining_pct"), "requests_remaining_pct"),
+            "last_error": _text(row.get("last_error")),
         })
     return out
 
 
 def _normalize_chat_and_fusion(models):
-    rows = _as_list(models, "data")
+    rows = _require_rows(models, "data")
+    if rows is None:
+        rows = []
     auto = None
     fusion = None
     others = []
@@ -81,13 +125,14 @@ def _normalize_chat_and_fusion(models):
         else:
             others.append(slim)
 
+    others.sort(key=lambda row: (not row["available"], row["id"] or ""))
     pinned = []
     if auto is not None:
         pinned.append(auto)
     if fusion is not None:
         pinned.append(fusion)
-    listed = (pinned + others)[:CHAT_LIST_CAP]
-
+    ranked = pinned + others
+    listed = ranked[:CHAT_LIST_CAP]
     chat = {
         "total": len(rows),
         "available": available,
@@ -95,6 +140,8 @@ def _normalize_chat_and_fusion(models):
         "auto_available": auto_available,
         "fusion_available": fusion_available,
         "models": listed,
+        "listed": len(listed),
+        "truncated": len(ranked) > CHAT_LIST_CAP,
     }
     fusion_state = {
         "available": fusion_available,
@@ -105,11 +152,8 @@ def _normalize_chat_and_fusion(models):
 
 
 def _normalize_media(providers):
-    platforms = {
-        row.get("platform")
-        for row in _as_list(providers, "providers")
-        if row.get("platform")
-    }
+    rows = _require_rows(providers, "providers") or []
+    platforms = {row.get("platform") for row in rows if isinstance(row, dict) and row.get("platform")}
     from_map = {mod: [] for mod in _MEDIA_ORDER}
     for platform, modalities in MEDIA_INFER.items():
         if platform not in platforms:
@@ -122,14 +166,28 @@ def _normalize_media(providers):
 
 
 def _normalize_quota(quota):
-    if not isinstance(quota, dict):
+    if quota is None:
         return {"generated_at": None, "low_balance_count": 0, "pools": []}
-    pools = quota.get("pools") or []
-    if not isinstance(pools, list):
-        pools = []
-    low = sum(1 for pool in pools if isinstance(pool, dict) and pool.get("low_balance"))
+    if not isinstance(quota, dict) or not isinstance(quota.get("pools"), list):
+        raise ValueError("quota payload missing pools")
+    pools = []
+    for row in quota["pools"][:QUOTA_CAP]:
+        if not isinstance(row, dict):
+            raise ValueError("quota pool must be an object")
+        item = {}
+        for field in _QUOTA_FIELDS:
+            if field not in row:
+                continue
+            if field == "low_balance":
+                item[field] = _bool(row[field], "low_balance")
+            elif field in {"platform", "pool", "reset_at", "estimated_exhaustion_at"}:
+                item[field] = _text(row[field])
+            else:
+                item[field] = _number(row[field], field)
+        pools.append(item)
+    low = sum(1 for pool in pools if pool.get("low_balance"))
     return {
-        "generated_at": quota.get("generated_at"),
+        "generated_at": _text(quota.get("generated_at")),
         "low_balance_count": low,
         "pools": pools,
     }
@@ -138,12 +196,16 @@ def _normalize_quota(quota):
 def _normalize_gateway(livez, readyz):
     livez = livez if isinstance(livez, dict) else {}
     readyz = readyz if isinstance(readyz, dict) else {}
+    ready_count = readyz.get("ready_upstreams", 0) if readyz else 0
+    if ready_count is not None:
+        ready_count = _number(ready_count, "ready_upstreams")
     return {
-        "version": livez.get("version"),
-        "uptime_s": livez.get("uptime_s", 0),
-        "live": livez.get("status") == "ok",
-        "ready": readyz.get("status") == "ok",
-        "ready_upstreams": readyz.get("ready_upstreams", 0),
+        "version": _text(livez.get("version")) if livez else None,
+        "uptime_s": _number(livez.get("uptime_s", 0), "uptime_s") if livez else 0,
+        "live": bool(livez) and livez.get("status") == "ok",
+        "ready": bool(readyz) and readyz.get("status") == "ok",
+        "ready_upstreams": 0 if ready_count is None else ready_count,
+        "readiness_observed": bool(readyz),
     }
 
 
@@ -151,17 +213,23 @@ def _rebuild_gateway_on_error(livez, readyz, previous_gateway):
     prev = previous_gateway if isinstance(previous_gateway, dict) else {}
     live = livez if isinstance(livez, dict) else None
     ready = readyz if isinstance(readyz, dict) else None
+    observed = ready is not None and "ready_upstreams" in ready
+    count = ready.get("ready_upstreams") if ready is not None and observed else prev.get("ready_upstreams", 0)
     return {
         "version": live.get("version") if live is not None and "version" in live else prev.get("version"),
         "uptime_s": live.get("uptime_s") if live is not None and "uptime_s" in live else prev.get("uptime_s", 0),
         "live": live is not None and live.get("status") == "ok",
         "ready": ready is not None and ready.get("status") == "ok",
-        "ready_upstreams": (
-            ready.get("ready_upstreams")
-            if ready is not None and "ready_upstreams" in ready
-            else prev.get("ready_upstreams", 0)
-        ),
+        "ready_upstreams": count if count is not None else 0,
+        "readiness_observed": observed,
     }
+
+
+def _enforce_budget(state):
+    blob = __import__("json").dumps(state, separators=(",", ":"), ensure_ascii=True)
+    if len(blob.encode("utf-8")) >= STATE_BUDGET:
+        raise ValueError("normalized state exceeds 100 KB")
+    return state
 
 
 def normalize_state(livez, readyz, providers, quota, models, previous=None, error=None, fetched_at=None):
@@ -170,18 +238,20 @@ def normalize_state(livez, readyz, providers, quota, models, previous=None, erro
         out["gateway"] = _rebuild_gateway_on_error(
             livez, readyz, previous.get("gateway") if isinstance(previous, dict) else None
         )
-        out["error"] = error
+        out["error"] = _text(error) or "request failed"
         out["stale"] = True
+        out["capabilities_fresh"] = False
         if fetched_at is not None:
             out["fetched_at"] = fetched_at
-        return out
+        return _enforce_budget(out)
 
     stamp = fetched_at if fetched_at is not None else _iso_now()
     chat, fusion = _normalize_chat_and_fusion(models)
-    return {
+    state = {
         "fetched_at": stamp,
-        "error": error,
+        "error": _text(error) if error else None,
         "stale": bool(error),
+        "capabilities_fresh": not bool(error),
         "gateway": _normalize_gateway(livez, readyz),
         "providers": _normalize_providers(providers),
         "chat": chat,
@@ -189,3 +259,4 @@ def normalize_state(livez, readyz, providers, quota, models, previous=None, erro
         "media": _normalize_media(providers),
         "quota": _normalize_quota(quota),
     }
+    return _enforce_budget(state)
